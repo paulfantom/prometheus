@@ -682,14 +682,14 @@ func (ev *evaluator) rangeEval(f func([]Value, *evalNodeHelper) Vector, exprs ..
 		for i := range exprs {
 			vectors[i] = vectors[i][:0]
 			for si, series := range matrixes[i] {
-				for pos, point := range series.Points {
+				for _, point := range series.Points {
 					if point.T == ts {
 						vectors[i] = append(vectors[i], Sample{Metric: series.Metric, Point: point})
-					}
-					if point.T >= ts {
 						// Move input vectors forward so we don't have to re-scan the same
 						// past points at the next step.
-						matrixes[i][si].Points = series.Points[pos:]
+						matrixes[i][si].Points = series.Points[1:]
+					}
+					if point.T >= ts {
 						break
 					}
 				}
@@ -718,7 +718,6 @@ func (ev *evaluator) rangeEval(f func([]Value, *evalNodeHelper) Vector, exprs ..
 					Metric: sample.Metric,
 					Points: getPointSlice(numSteps),
 				}
-				seriess[h] = ss
 			}
 			sample.Point.T = ts
 			ss.Points = append(ss.Points, sample.Point)
@@ -796,18 +795,19 @@ func (ev *evaluator) eval(expr Expr) Value {
 		inArgs := make([]Value, len(e.Args))
 		// Evaluate any non-matrix arguments.
 		otherArgs := make([]Matrix, len(e.Args))
-		otherArgsIn := make([]Vector, len(e.Args))
+		otherInArgs := make([]Vector, len(e.Args))
 		for i, e := range e.Args {
 			if i != matrixArgIndex {
 				otherArgs[i] = ev.eval(e).(Matrix)
-				otherArgsIn[i] = Vector{Sample{}}
-				inArgs[i] = otherArgsIn[i]
+				otherInArgs[i] = Vector{Sample{}}
+				inArgs[i] = otherInArgs[i]
 			}
 		}
 
 		sel := e.Args[matrixArgIndex].(*MatrixSelector)
 		mat := make(Matrix, 0, len(sel.series)) // Output matrix.
 		offset := durationMilliseconds(sel.Offset)
+		selRange := durationMilliseconds(sel.Range)
 		// Reuse objects across steps to save memory allocations.
 		points := getPointSlice(16)
 		inMatrix := make(Matrix, 1)
@@ -817,7 +817,7 @@ func (ev *evaluator) eval(expr Expr) Value {
 		var it *storage.BufferedSeriesIterator
 		for i, s := range sel.series {
 			if it == nil {
-				it = storage.NewBuffer(s.Iterator(), durationMilliseconds(sel.Range))
+				it = storage.NewBuffer(s.Iterator(), selRange)
 			} else {
 				it.Reset(s.Iterator())
 			}
@@ -836,11 +836,11 @@ func (ev *evaluator) eval(expr Expr) Value {
 				// when looking up the argument, as there will be no gaps.
 				for j := range e.Args {
 					if j != matrixArgIndex {
-						otherArgsIn[j][0].V = otherArgs[j][0].Points[step].V
+						otherInArgs[j][0].V = otherArgs[j][0].Points[step].V
 					}
 				}
 				maxt := ts - offset
-				mint := maxt - durationMilliseconds(sel.Range)
+				mint := maxt - selRange
 				// Evaluate the matrix selector for this series for this step.
 				points = ev.matrixIterSlice(it, maxt, mint, points[:0])
 				if len(points) == 0 {
